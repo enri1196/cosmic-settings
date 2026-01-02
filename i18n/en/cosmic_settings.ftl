@@ -918,6 +918,9 @@ administrator = Administrator
 
 add-user = Add user
 change-password = Change password
+authentication-required = Authentication required
+current-password = Current password
+current-password-required = Current password required
 remove-user = Remove user
 full-name = Full name
 invalid-username = Invalid username
