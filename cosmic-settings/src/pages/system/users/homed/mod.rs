@@ -3,7 +3,6 @@
 
 use anyhow::Context;
 use pwhash::sha512_crypt;
-use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::OwnedFd as StdOwnedFd;
@@ -12,8 +11,12 @@ use zbus::zvariant::OwnedFd;
 
 use crate::pages::system::users::backend::{UserBackend, UserBackendKind, UserEntry};
 use crate::pages::system::users::homed::home1_manager::Home1ManagerProxy;
+use crate::pages::system::users::homed::homed_json::{
+    UserPrivilegedSection, UserRecord, UserSecretSection,
+};
 
 mod home1_manager;
+mod homed_json;
 
 pub struct HomedBackend {
     conn: zbus::Connection,
@@ -46,8 +49,7 @@ impl UserBackend for HomedBackend {
         for (name, uid, _state, _gid, real_name, _home, _shell, _path) in homes {
             let is_admin = match manager.get_user_record_by_name(name.clone()).await {
                 Ok((record_json, _incomplete, _path)) => {
-                    let record: Value = serde_json::from_str(&record_json)
-                        .context("failed to parse homed user record")?;
+                    let record = parse_user_record(&record_json)?;
                     record_has_admin(&record)
                 }
                 Err(why) => {
@@ -83,27 +85,26 @@ impl UserBackend for HomedBackend {
             .get_user_record_by_name(user.username.clone())
             .await
             .context("failed to look up homed user record")?;
-        let mut record: Value =
-            serde_json::from_str(&record_json).context("failed to parse homed user record")?;
+        let mut record = parse_user_record(&record_json)?;
 
-        sanitize_record_for_update(&mut record)?;
+        // sanitize_record_for_update(&mut record)?;
         insert_password_hash(&mut record, password)?;
         insert_password_secret(&mut record, old_password)?;
         bump_last_change(&mut record)?;
 
         manager
-            .update_home(record.to_string())
+            .update_home(serialize_user_record(&record)?)
             .await
             .context("failed to update homed user record")?;
 
-        let new_secret = json!({"secret": {"password": [password]}}).to_string();
-        let old_secret = json!({"secret": {"password": [old_password]}}).to_string();
+        let new_secret = secret_payload(password)?;
+        let old_secret = secret_payload(old_password)?;
 
         manager
             .change_password_home(
                 user.username.to_string(),
-                new_secret.to_string(),
-                old_secret.to_string(),
+                new_secret,
+                old_secret,
             )
             .await
             .context("failed to change password with interactive auth")?;
@@ -131,29 +132,17 @@ impl UserBackend for HomedBackend {
             .get_user_record_by_name(user.username.clone())
             .await
             .context("failed to look up homed user record")?;
-        let mut record: Value =
-            serde_json::from_str(&record_json).context("failed to parse homed user record")?;
+        let mut record = parse_user_record(&record_json)?;
 
-        sanitize_record_for_update(&mut record)?;
+        // sanitize_record_for_update(&mut record)?;
 
-        let member_of = member_of_from_record(&record);
-        let (member_of, changed) = update_member_of(member_of, is_admin);
+        let changed = update_member_of(&mut record.member_of, is_admin);
 
         if !changed {
             return Ok(());
         }
 
         bump_last_change(&mut record)?;
-
-        let Some(record_obj) = record.as_object_mut() else {
-            anyhow::bail!("homed user record is not a JSON object");
-        };
-
-        if member_of.is_empty() {
-            record_obj.remove("memberOf");
-        } else {
-            record_obj.insert("memberOf".to_string(), json!(member_of));
-        }
 
         if let Some(password) = auth_password.filter(|value| !value.is_empty()) {
             insert_password_secret(&mut record, password)?;
@@ -163,7 +152,7 @@ impl UserBackend for HomedBackend {
         }
 
         manager
-            .update_home(record.to_string())
+            .update_home(serialize_user_record(&record)?)
             .await
             .context("failed to update homed user record")?;
 
@@ -178,18 +167,28 @@ impl UserBackend for HomedBackend {
         is_admin: bool,
     ) -> anyhow::Result<()> {
         let manager = self.manager().await?;
-        let mut record = json!({"userName": username});
         let password_hash = hash_password(password)?;
 
+        let mut record = UserRecord {
+            user_name: Some(username.to_string()),
+            ..UserRecord::default()
+        };
+
         if !full_name.is_empty() {
-            record["realName"] = json!(full_name);
+            record.real_name = Some(full_name.to_string());
         }
 
-        record["privileged"] = json!({"hashedPassword": [password_hash]});
-        record["secret"] = json!({"password": [password]});
+        record.privileged = Some(UserPrivilegedSection {
+            hashed_password: vec![password_hash],
+            ..UserPrivilegedSection::default()
+        });
+        record.secret = Some(UserSecretSection {
+            password: vec![password.to_string()],
+            ..UserSecretSection::default()
+        });
 
         manager
-            .create_home(record.to_string())
+            .create_home(serialize_user_record(&record)?)
             .await
             .context("failed to create homed user")?;
 
@@ -226,27 +225,19 @@ impl UserBackend for HomedBackend {
             .get_user_record_by_name(user.username.clone())
             .await
             .context("failed to look up homed user record")?;
-        let mut record: Value =
-            serde_json::from_str(&record_json).context("failed to parse homed user record")?;
+        let mut record = parse_user_record(&record_json)?;
 
-        sanitize_record_for_update(&mut record)?;
+        sanitize_record_for_update(&mut record);
 
-        let Some(record_obj) = record.as_object_mut() else {
-            anyhow::bail!("homed user record is not a JSON object");
-        };
-
-        let current = record_obj
-            .get("realName")
-            .and_then(Value::as_str)
-            .unwrap_or("");
+        let current = record.real_name.as_deref().unwrap_or("");
         if current == full_name {
             return Ok(());
         }
 
         if full_name.is_empty() {
-            record_obj.remove("realName");
+            record.real_name = None;
         } else {
-            record_obj.insert("realName".to_string(), json!(full_name));
+            record.real_name = Some(full_name.to_string());
         }
 
         bump_last_change(&mut record)?;
@@ -259,7 +250,7 @@ impl UserBackend for HomedBackend {
         }
 
         manager
-            .update_home(record.to_string())
+            .update_home(serialize_user_record(&record)?)
             .await
             .context("failed to update homed user record")?;
 
@@ -281,15 +272,10 @@ impl UserBackend for HomedBackend {
             .get_user_record_by_name(user.username.clone())
             .await
             .context("failed to look up homed user record")?;
-        let mut record: Value =
-            serde_json::from_str(&record_json).context("failed to parse homed user record")?;
+        let mut record = parse_user_record(&record_json)?;
 
-        sanitize_record_for_update(&mut record)?;
-
-        let Some(record_obj) = record.as_object_mut() else {
-            anyhow::bail!("homed user record is not a JSON object");
-        };
-        record_obj.remove("blobManifest");
+        sanitize_record_for_update(&mut record);
+        record.extra.remove("blobManifest");
 
         bump_last_change(&mut record)?;
 
@@ -302,7 +288,7 @@ impl UserBackend for HomedBackend {
 
         let blobs = avatar_blobs(icon_path)?;
         manager
-            .update_home_ex(record.to_string(), blobs, 0)
+            .update_home_ex(serialize_user_record(&record)?, blobs, 0)
             .await
             .context("failed to update homed user record")?;
 
@@ -310,14 +296,33 @@ impl UserBackend for HomedBackend {
     }
 }
 
-fn record_has_admin(record: &Value) -> bool {
-    let Some(member_of) = record.get("memberOf").and_then(Value::as_array) else {
-        return false;
-    };
+#[derive(serde::Serialize)]
+struct SecretPayload {
+    secret: UserSecretSection,
+}
 
-    member_of
+fn parse_user_record(record_json: &str) -> anyhow::Result<UserRecord> {
+    serde_json::from_str(record_json).context("failed to parse homed user record")
+}
+
+fn serialize_user_record(record: &UserRecord) -> anyhow::Result<String> {
+    serde_json::to_string(record).context("failed to serialize homed user record")
+}
+
+fn secret_payload(password: &str) -> anyhow::Result<String> {
+    let secret = UserSecretSection {
+        password: vec![password.to_string()],
+        ..UserSecretSection::default()
+    };
+    serde_json::to_string(&SecretPayload { secret })
+        .context("failed to serialize homed secret payload")
+}
+
+fn record_has_admin(record: &UserRecord) -> bool {
+    record
+        .member_of
         .iter()
-        .filter_map(Value::as_str)
+        .map(String::as_str)
         .any(is_admin_group)
 }
 
@@ -325,21 +330,7 @@ fn is_admin_group(group: &str) -> bool {
     ADMIN_GROUPS.iter().any(|admin_group| *admin_group == group)
 }
 
-fn member_of_from_record(record: &Value) -> Vec<String> {
-    record
-        .get("memberOf")
-        .and_then(Value::as_array)
-        .map(|member_of| {
-            member_of
-                .iter()
-                .filter_map(Value::as_str)
-                .map(ToString::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn update_member_of(mut member_of: Vec<String>, is_admin: bool) -> (Vec<String>, bool) {
+fn update_member_of(member_of: &mut Vec<String>, is_admin: bool) -> bool {
     let mut changed = false;
 
     if is_admin {
@@ -355,14 +346,10 @@ fn update_member_of(mut member_of: Vec<String>, is_admin: bool) -> (Vec<String>,
         changed = member_of.len() != original_len;
     }
 
-    (member_of, changed)
+    changed
 }
 
-fn bump_last_change(record: &mut Value) -> anyhow::Result<()> {
-    let Some(record_obj) = record.as_object_mut() else {
-        anyhow::bail!("homed user record is not a JSON object");
-    };
-
+fn bump_last_change(record: &mut UserRecord) -> anyhow::Result<()> {
     let mut now_us = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .context("system time is before unix epoch")?
@@ -372,63 +359,45 @@ fn bump_last_change(record: &mut Value) -> anyhow::Result<()> {
     }
     let mut new_value = now_us as u64;
 
-    if let Some(current) = record_obj.get("lastChangeUSec").and_then(Value::as_u64) {
+    if let Some(current) = record.last_change_usec {
         if new_value <= current {
             new_value = current.saturating_add(1);
         }
     }
 
-    record_obj.insert("lastChangeUSec".to_string(), json!(new_value));
+    record.last_change_usec = Some(new_value);
 
     Ok(())
 }
 
-fn sanitize_record_for_update(record: &mut Value) -> anyhow::Result<()> {
-    let Some(record_obj) = record.as_object_mut() else {
-        anyhow::bail!("homed user record is not a JSON object");
-    };
+fn sanitize_record_for_update(record: &mut UserRecord) {
+    record.binding.clear();
+    record.status.clear();
+    record.secret = None;
+    record.signature.clear();
+}
 
-    record_obj.remove("binding");
-    record_obj.remove("status");
-    record_obj.remove("secret");
-    record_obj.remove("signature");
+fn insert_password_secret(record: &mut UserRecord, password: &str) -> anyhow::Result<()> {
+    let mut secret = record.secret.take().unwrap_or_default();
+    secret.password = vec![password.to_string()];
+    record.secret = Some(secret);
 
     Ok(())
 }
 
-fn insert_password_secret(record: &mut Value, password: &str) -> anyhow::Result<()> {
-    let Some(record_obj) = record.as_object_mut() else {
-        anyhow::bail!("homed user record is not a JSON object");
-    };
-
-    record_obj.insert("secret".to_string(), json!({"password": [password]}));
-
-    Ok(())
-}
-
-fn record_has_hashed_password(record: &Value) -> bool {
+fn record_has_hashed_password(record: &UserRecord) -> bool {
     record
-        .get("privileged")
-        .and_then(Value::as_object)
-        .and_then(|privileged| privileged.get("hashedPassword"))
-        .and_then(Value::as_array)
-        .is_some_and(|hashes| !hashes.is_empty())
+        .privileged
+        .as_ref()
+        .is_some_and(|privileged| !privileged.hashed_password.is_empty())
 }
 
-fn insert_password_hash(record: &mut Value, password: &str) -> anyhow::Result<()> {
+fn insert_password_hash(record: &mut UserRecord, password: &str) -> anyhow::Result<()> {
     let password_hash = hash_password(password)?;
-    let Some(record_obj) = record.as_object_mut() else {
-        anyhow::bail!("homed user record is not a JSON object");
-    };
-
-    let privileged = record_obj
-        .entry("privileged".to_string())
-        .or_insert_with(|| json!({}));
-    let Some(privileged_obj) = privileged.as_object_mut() else {
-        anyhow::bail!("homed user record privileged section is not a JSON object");
-    };
-
-    privileged_obj.insert("hashedPassword".to_string(), json!([password_hash]));
+    let privileged = record
+        .privileged
+        .get_or_insert_with(UserPrivilegedSection::default);
+    privileged.hashed_password = vec![password_hash];
 
     Ok(())
 }
