@@ -1,9 +1,10 @@
 // Copyright 2024 System76 <info@system76.com>
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::{UserBackend, UserBackendKind, UserEntry, uid_range};
-use crate::pages::system::users::backend::request_permission_on_denial;
-use crate::pages::system::users::getent;
+mod getent;
+
+use crate::pages::system::users::DEFAULT_ICON_FILE;
+use crate::pages::system::users::backend::{UserBackend, UserBackendKind, UserEntry, request_permission_on_denial, uid_range};
 use anyhow::Context;
 use image::GenericImageView;
 use pwhash::{bcrypt, md5_crypt, sha256_crypt, sha512_crypt};
@@ -52,8 +53,7 @@ impl UserBackend for ClassicBackend {
                 is_admin: match user_proxy.account_type().await {
                     Ok(1) => true,
                     Ok(_) => false,
-                    Err(_) => admin_group
-                        .is_some_and(|group| group.users.contains(&user.username)),
+                    Err(_) => admin_group.is_some_and(|group| group.users.contains(&user.username)),
                 },
                 username: String::from(user.username),
                 full_name: String::from(user.full_name),
@@ -108,7 +108,9 @@ impl UserBackend for ClassicBackend {
             .context("failed to get user proxy")?;
 
         request_permission_on_denial(&conn, || async {
-            user_proxy.set_account_type(if is_admin { 1 } else { 0 }).await
+            user_proxy
+                .set_account_type(if is_admin { 1 } else { 0 })
+                .await
         })
         .await
         .context("failed to change account type")?;
@@ -140,7 +142,7 @@ impl UserBackend for ClassicBackend {
             .context("failed to get user by object path")?;
 
         _ = user.set_password(&password_hashed, "").await;
-        _ = user.set_icon_file(super::super::DEFAULT_ICON_FILE).await;
+        _ = user.set_icon_file(DEFAULT_ICON_FILE).await;
 
         Ok(())
     }
@@ -188,13 +190,11 @@ impl UserBackend for ClassicBackend {
             .context("failed to get user proxy")?;
 
         let icon_path = prepare_icon_file(icon_path).context("failed to prepare icon file")?;
-        let icon_path = icon_path
-            .to_str()
-            .context("icon path is not valid UTF-8")?;
+        let icon_path = icon_path.to_str().context("icon path is not valid UTF-8")?;
 
         request_permission_on_denial(&conn, || user_proxy.set_icon_file(icon_path))
-        .await
-        .context("failed to set profile icon")?;
+            .await
+            .context("failed to set profile icon")?;
 
         Ok(())
     }

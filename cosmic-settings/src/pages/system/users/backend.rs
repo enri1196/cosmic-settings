@@ -1,20 +1,16 @@
 // Copyright 2024 System76 <info@system76.com>
 // SPDX-License-Identifier: GPL-3.0-only
 
-mod classic;
-#[cfg(feature = "homed")]
-mod homed;
-
 use async_trait::async_trait;
-use zbus_polkit::policykit1::CheckAuthorizationFlags;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use zbus_polkit::policykit1::CheckAuthorizationFlags;
 
-pub use classic::ClassicBackend;
+pub use super::classic::ClassicBackend;
 #[cfg(feature = "homed")]
-pub use homed::HomedBackend;
+pub use super::homed::HomedBackend;
 
 const USERS_ADMIN_POLKIT_POLICY_ID: &str = "com.system76.CosmicSettings.Users.Admin";
 
@@ -92,9 +88,12 @@ pub async fn backend_for_kind(kind: UserBackendKind) -> Option<Box<dyn UserBacke
         UserBackendKind::Homed => {
             #[cfg(feature = "homed")]
             {
-                HomedBackend::try_new().await
-                    .map(|be| Box::new(be) as Box<dyn UserBackend>)
+                let Some(homed) = HomedBackend::try_new().await else {
+                    return None;
+                };
+                Some(Box::new(homed))
             }
+
             #[cfg(not(feature = "homed"))]
             {
                 None
@@ -112,7 +111,7 @@ pub async fn preferred_backend() -> Option<Box<dyn UserBackend>> {
     Some(Box::new(ClassicBackend::new()))
 }
 
-fn uid_range() -> (u64, u64) {
+pub fn uid_range() -> (u64, u64) {
     let (mut min, mut max) = (1000, 60000);
     let Ok(file) = File::open("/etc/login.defs") else {
         return (min, max);
@@ -150,7 +149,7 @@ fn uid_range() -> (u64, u64) {
     (min, max)
 }
 
-async fn request_permission_on_denial<T, Fun, Fut>(
+pub async fn request_permission_on_denial<T, Fun, Fut>(
     conn: &zbus::Connection,
     action: Fun,
 ) -> zbus::Result<T>

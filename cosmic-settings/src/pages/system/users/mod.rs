@@ -2,7 +2,9 @@
 // SPDX-License-Identifier: GPL-3.0-only
 
 mod backend;
-mod getent;
+mod classic;
+#[cfg(feature = "homed")]
+mod homed;
 
 use crate::pages;
 use cosmic::{
@@ -15,11 +17,7 @@ use cosmic_settings_page::{self as page, Section, section};
 use regex::Regex;
 use slab::Slab;
 use slotmap::SlotMap;
-use std::{
-    collections::HashSet,
-    path::PathBuf,
-    sync::Arc,
-};
+use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use url::Url;
 
 const DEFAULT_ICON_FILE: &str = "/usr/share/pixmaps/faces/pop-robot.png";
@@ -100,11 +98,11 @@ impl Default for Page {
             selected_user_idx: None,
             dialog: None,
             default_icon: icon::from_path(PathBuf::from(DEFAULT_ICON_FILE)),
-            current_password_label: crate::fl!("current-password"),
-            password_label: crate::fl!("password"),
-            password_confirm_label: crate::fl!("password-confirm"),
-            username_label: crate::fl!("username"),
-            fullname_label: crate::fl!("full-name"),
+            current_password_label: fl!("current-password"),
+            password_label: fl!("password"),
+            password_confirm_label: fl!("password-confirm"),
+            username_label: fl!("username"),
+            fullname_label: fl!("full-name"),
             current_password_hidden: true,
             password_hidden: true,
             password_confirm_hidden: true,
@@ -175,7 +173,6 @@ impl From<Message> for crate::pages::Message {
         crate::pages::Message::User(message)
     }
 }
-
 
 impl page::Page<crate::pages::Message> for Page {
     fn set_id(&mut self, entity: page::Entity) {
@@ -381,7 +378,8 @@ impl page::Page<crate::pages::Message> for Page {
                 let mut validation_msg = String::new();
                 let has_new_password_input =
                     !user.password.is_empty() || !user.password_confirm.is_empty();
-                let current_password_missing = needs_current_password && user.old_password.is_empty();
+                let current_password_missing =
+                    needs_current_password && user.old_password.is_empty();
                 let complete_maybe = if user.password != user.password_confirm
                     && !user.password.is_empty()
                     && !user.password_confirm.is_empty()
@@ -408,15 +406,13 @@ impl page::Page<crate::pages::Message> for Page {
 
                 widget::dialog()
                     .title(fl!("change-password"))
-                    .control(
-                        {
-                            let mut column = widget::ListColumn::default();
-                            if needs_current_password {
-                                column = column.add(old_password_input);
-                            }
-                            column.add(password_input).add(password_confirm_input)
-                        },
-                    )
+                    .control({
+                        let mut column = widget::ListColumn::default();
+                        if needs_current_password {
+                            column = column.add(old_password_input);
+                        }
+                        column.add(password_input).add(password_confirm_input)
+                    })
                     .primary_action(save_button)
                     .secondary_action(cancel_button)
                     .tertiary_action(widget::text::body(validation_msg))
@@ -546,12 +542,14 @@ impl Page {
                 return cosmic::task::future(async move {
                     match action {
                         HomedAction::SetAdmin { user, is_admin } => {
-                            let Some(backend) = backend::backend_for_kind(user.backend).await else {
+                            let Some(backend) = backend::backend_for_kind(user.backend).await
+                            else {
                                 return Message::None;
                             };
 
-                            if let Err(why) =
-                                backend.set_admin(&user, is_admin, Some(password.as_str())).await
+                            if let Err(why) = backend
+                                .set_admin(&user, is_admin, Some(password.as_str()))
+                                .await
                             {
                                 tracing::error!(?why, "failed to change account type of user");
                                 return Message::None;
@@ -560,7 +558,8 @@ impl Page {
                             Message::ChangedAccountType(user.id, is_admin)
                         }
                         HomedAction::SetFullName { user, full_name } => {
-                            let Some(backend) = backend::backend_for_kind(user.backend).await else {
+                            let Some(backend) = backend::backend_for_kind(user.backend).await
+                            else {
                                 return Message::None;
                             };
 
@@ -574,7 +573,8 @@ impl Page {
                             Message::None
                         }
                         HomedAction::SetProfileIcon { user, path } => {
-                            let Some(backend) = backend::backend_for_kind(user.backend).await else {
+                            let Some(backend) = backend::backend_for_kind(user.backend).await
+                            else {
                                 return Message::None;
                             };
 
@@ -868,7 +868,10 @@ impl Page {
                     self.password_hidden = true;
                     self.password_confirm_hidden = true;
                     self.dialog = Some(Dialog::HomedAuth {
-                        action: HomedAction::SetAdmin { user: user_entry, is_admin },
+                        action: HomedAction::SetAdmin {
+                            user: user_entry,
+                            is_admin,
+                        },
                         password: String::new(),
                     });
                     return cosmic::Task::none();
@@ -936,15 +939,15 @@ fn user_list() -> Section<crate::pages::Message> {
                         .apply(Element::from);
 
                     let fullname = widget::editable_input(
-                            "",
-                            &user.full_name,
-                            user.full_name_edit,
-                            move |_| Message::ToggleEdit(idx, EditorField::FullName),
-                        )
-                        .on_input(move |name| Message::Edit(idx, EditorField::FullName, name))
-                        .on_submit(move |_| Message::ApplyEdit(idx, EditorField::FullName))
-                        .on_unfocus(Message::ApplyEdit(idx, EditorField::FullName))
-                        .apply(Element::from);
+                        "",
+                        &user.full_name,
+                        user.full_name_edit,
+                        move |_| Message::ToggleEdit(idx, EditorField::FullName),
+                    )
+                    .on_input(move |name| Message::Edit(idx, EditorField::FullName, name))
+                    .on_submit(move |_| Message::ApplyEdit(idx, EditorField::FullName))
+                    .on_unfocus(Message::ApplyEdit(idx, EditorField::FullName))
+                    .apply(Element::from);
 
                     let fullname_text = text::body(if !user.full_name.is_empty() {
                         &user.full_name

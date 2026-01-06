@@ -1,104 +1,30 @@
 // Copyright 2024 System76 <info@system76.com>
 // SPDX-License-Identifier: GPL-3.0-only
 
-use super::{UserBackend, UserBackendKind, UserEntry};
 use anyhow::Context;
 use pwhash::sha512_crypt;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use std::collections::HashMap;
 use std::fs::File;
 use std::os::fd::OwnedFd as StdOwnedFd;
 use std::time::{SystemTime, UNIX_EPOCH};
-use zbus::zvariant::{self, OwnedFd};
+use zbus::zvariant::OwnedFd;
 
-// TODO: temp proxy to allow interactive auth
-// I should probably add this to dbus-settings crate
-#[zbus::proxy(
-    interface = "org.freedesktop.home1.Manager",
-    default_service = "org.freedesktop.home1",
-    default_path = "/org/freedesktop/home1"
-)]
-trait Home1Manager {
-    #[zbus(name = "GetHomeByName")]
-    fn get_home_by_name(
-        &self,
-        user_name: String,
-    ) -> zbus::Result<(
-        u32,
-        String,
-        u32,
-        String,
-        String,
-        String,
-        zvariant::OwnedObjectPath,
-    )>;
+use crate::pages::system::users::backend::{UserBackend, UserBackendKind, UserEntry};
+use crate::pages::system::users::homed::home1_manager::Home1ManagerProxy;
 
-    #[zbus(name = "GetUserRecordByName")]
-    fn get_user_record_by_name(
-        &self,
-        user_name: String,
-    ) -> zbus::Result<(String, bool, zvariant::OwnedObjectPath)>;
-
-    #[zbus(name = "ListHomes")]
-    fn list_homes(
-        &self,
-    ) -> zbus::Result<
-        Vec<(
-            String,
-            u32,
-            String,
-            u32,
-            String,
-            String,
-            String,
-            zvariant::OwnedObjectPath,
-        )>,
-    >;
-
-    #[zbus(name = "CreateHome", allow_interactive_auth)]
-    fn create_home(&self, user_record: String) -> zbus::Result<()>;
-
-    #[zbus(name = "UpdateHome", allow_interactive_auth)]
-    fn update_home(&self, record: String) -> zbus::Result<()>;
-
-    #[zbus(name = "UpdateHomeEx", allow_interactive_auth)]
-    fn update_home_ex(
-        &self,
-        record: String,
-        blobs: std::collections::HashMap<String, zbus::zvariant::OwnedFd>,
-        flags: u64,
-    ) -> zbus::Result<()>;
-
-    #[zbus(name = "ChangePasswordHome", allow_interactive_auth)]
-    fn change_password_home(
-        &self,
-        user_name: String,
-        new_secret: String,
-        old_secret: String,
-    ) -> zbus::Result<()>;
-
-    #[zbus(name = "AcquireHome", allow_interactive_auth)]
-    fn acquire_home(
-        &self,
-        user_name: String,
-        secret: String,
-        please_suspend: bool,
-    ) -> zbus::Result<OwnedFd>;
-
-    #[zbus(name = "RemoveHome", allow_interactive_auth)]
-    fn remove_home(&self, user_name: String) -> zbus::Result<()>;
-}
+mod home1_manager;
 
 pub struct HomedBackend {
     conn: zbus::Connection,
 }
 
 const ADMIN_GROUPS: [&str; 2] = ["sudo", "wheel"];
+
 impl HomedBackend {
     pub async fn try_new() -> Option<Self> {
         let conn = zbus::Connection::system().await.ok()?;
-        let _proxy = Home1ManagerProxy::new(&conn)
-            .await.ok()?;
+        let _proxy = Home1ManagerProxy::new(&conn).await.ok()?;
         Some(Self { conn })
     }
 
@@ -396,9 +322,7 @@ fn record_has_admin(record: &Value) -> bool {
 }
 
 fn is_admin_group(group: &str) -> bool {
-    ADMIN_GROUPS
-        .iter()
-        .any(|admin_group| *admin_group == group)
+    ADMIN_GROUPS.iter().any(|admin_group| *admin_group == group)
 }
 
 fn member_of_from_record(record: &Value) -> Vec<String> {
