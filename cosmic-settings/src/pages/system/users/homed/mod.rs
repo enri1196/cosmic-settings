@@ -87,7 +87,7 @@ impl UserBackend for HomedBackend {
             .context("failed to look up homed user record")?;
         let mut record = parse_user_record(&record_json)?;
 
-        sanitize_record_for_update(&mut record)?;
+        sanitize_record_for_update(&mut record);
         insert_password_hash(&mut record, password)?;
         insert_password_secret(&mut record, old_password)?;
         bump_last_change(&mut record)?;
