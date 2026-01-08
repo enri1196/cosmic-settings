@@ -78,36 +78,39 @@ impl UserBackend for HomedBackend {
         old_password: Option<&str>,
     ) -> anyhow::Result<()> {
         let manager = self.manager().await?;
+
         let old_password = old_password
-            .filter(|value| !value.is_empty())
+            .filter(|p| !p.is_empty())
             .context("homed password updates require the current password")?;
+
+        manager
+            .unlock_home(
+                user.username.clone(),
+                secret_payload(old_password)?,
+            )
+            .await
+            .context("failed to activate home for password change")?;
+
+        manager
+            .change_password_home(
+                user.username.clone(),
+                secret_payload(password)?,
+                secret_payload(old_password)?,
+            )
+            .await
+            .context("failed to change homed password")?;
+
         let (record_json, _incomplete, _path) = manager
             .get_user_record_by_name(user.username.clone())
-            .await
-            .context("failed to look up homed user record")?;
-        let mut record = parse_user_record(&record_json)?;
+            .await?;
 
+        let mut record = parse_user_record(&record_json)?;
         sanitize_record_for_update(&mut record);
-        insert_password_hash(&mut record, password)?;
-        insert_password_secret(&mut record, old_password)?;
         bump_last_change(&mut record)?;
 
         manager
             .update_home(serialize_user_record(&record)?)
-            .await
-            .context("failed to update homed user record")?;
-
-        let new_secret = secret_payload(password)?;
-        let old_secret = secret_payload(old_password)?;
-
-        manager
-            .change_password_home(
-                user.username.to_string(),
-                new_secret,
-                old_secret,
-            )
-            .await
-            .context("failed to change password with interactive auth")?;
+            .await?;
 
         Ok(())
     }

@@ -1,4 +1,4 @@
-use zbus::zvariant::{self, OwnedFd};
+use zbus::zvariant;
 
 // TODO: temp proxy to allow interactive auth
 // I should probably add this to dbus-settings crate
@@ -66,13 +66,8 @@ pub(crate) trait Home1Manager {
         old_secret: String,
     ) -> zbus::Result<()>;
 
-    #[zbus(name = "AcquireHome", allow_interactive_auth)]
-    fn acquire_home(
-        &self,
-        user_name: String,
-        secret: String,
-        please_suspend: bool,
-    ) -> zbus::Result<OwnedFd>;
+    #[zbus(name = "UnlockHome", allow_interactive_auth)]
+    fn unlock_home(&self, user_name: String, secret: String) -> zbus::Result<()>;
 
     #[zbus(name = "RemoveHome", allow_interactive_auth)]
     fn remove_home(&self, user_name: String) -> zbus::Result<()>;

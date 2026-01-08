@@ -925,4 +925,6 @@ remove-user = Remove user
 full-name = Full name
 invalid-username = Invalid username
 password-mismatch = Password and confirmation must match
+password-too-short = Password must be at least { $min } characters
+password-same-as-current = New password must be different from the current password
 save = Save

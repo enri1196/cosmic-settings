@@ -21,6 +21,7 @@ use std::{collections::HashSet, path::PathBuf, sync::Arc};
 use url::Url;
 
 const DEFAULT_ICON_FILE: &str = "/usr/share/pixmaps/faces/pop-robot.png";
+const MIN_PASSWORD_LEN: usize = 8;
 
 #[derive(Clone, Debug, Default)]
 pub struct User {
@@ -77,6 +78,7 @@ pub struct Page {
     users: Vec<User>,
     selected_user_idx: Option<usize>,
     dialog: Option<Dialog>,
+    homed_available: bool,
     default_icon: icon::Handle,
     current_password_label: String,
     password_label: String,
@@ -97,6 +99,7 @@ impl Default for Page {
             users: Vec::default(),
             selected_user_idx: None,
             dialog: None,
+            homed_available: false,
             default_icon: icon::from_path(PathBuf::from(DEFAULT_ICON_FILE)),
             current_password_label: fl!("current-password"),
             password_label: fl!("password"),
@@ -145,7 +148,7 @@ pub enum Message {
     Dialog(Option<Dialog>),
     Edit(usize, EditorField, String),
     LoadedIcon(u64, icon::Handle),
-    LoadPage(u64, Vec<User>),
+    LoadPage(u64, Vec<User>, bool),
     HomedAuthRequested(HomedAction),
     HomedAuthSubmit(HomedAction, String),
     NewUser(String, String, String, bool),
@@ -262,6 +265,9 @@ impl page::Page<crate::pages::Message> for Page {
                 let mut validation_msg = String::new();
                 let username_regex = Regex::new("^[a-z][a-z0-9-]{0,30}$").unwrap();
                 let username_valid = username_regex.is_match(&user.username);
+                let password_too_short = self.homed_available
+                    && !user.password.is_empty()
+                    && user.password.chars().count() < MIN_PASSWORD_LEN;
                 let complete_maybe = if !username_valid && !user.username.is_empty() {
                     validation_msg = fl!("invalid-username");
                     None
@@ -270,6 +276,10 @@ impl page::Page<crate::pages::Message> for Page {
                     && !user.password_confirm.is_empty()
                 {
                     validation_msg = fl!("password-mismatch");
+                    None
+                } else if password_too_short {
+                    // homed wants minimum 8 chars
+                    validation_msg = fl!("password-too-short", min = MIN_PASSWORD_LEN);
                     None
                 } else if user.full_name.is_empty()
                     || user.username.is_empty()
@@ -380,11 +390,26 @@ impl page::Page<crate::pages::Message> for Page {
                     !user.password.is_empty() || !user.password_confirm.is_empty();
                 let current_password_missing =
                     needs_current_password && user.old_password.is_empty();
+                let password_too_short = needs_current_password
+                    && !user.password.is_empty()
+                    && user.password.chars().count() < MIN_PASSWORD_LEN;
+                let password_same_as_old = needs_current_password
+                    && !user.password.is_empty()
+                    && !user.password_confirm.is_empty()
+                    && !user.old_password.is_empty()
+                    && user.password == user.old_password;
                 let complete_maybe = if user.password != user.password_confirm
                     && !user.password.is_empty()
                     && !user.password_confirm.is_empty()
                 {
                     validation_msg = fl!("password-mismatch");
+                    None
+                } else if password_same_as_old {
+                    validation_msg = fl!("password-same-as-current");
+                    None
+                } else if password_too_short {
+                    // homed wants minimum 8 chars
+                    validation_msg = fl!("password-too-short", min = MIN_PASSWORD_LEN);
                     None
                 } else if current_password_missing && has_new_password_input {
                     validation_msg = fl!("current-password-required");
@@ -501,7 +526,13 @@ impl Page {
             }
         }
 
-        Message::LoadPage(uid, users)
+        let mut homed_available = false;
+        #[cfg(feature = "homed")]
+        {
+            homed_available = backend::HomedBackend::try_new().await.is_some();
+        }
+
+        Message::LoadPage(uid, users, homed_available)
     }
 
     pub fn update(&mut self, message: Message) -> cosmic::Task<crate::app::Message> {
@@ -779,9 +810,10 @@ impl Page {
                 .discard();
             }
 
-            Message::LoadPage(uid, users) => {
+            Message::LoadPage(uid, users, homed_available) => {
                 self.current_user_id = uid;
                 self.users = users;
+                self.homed_available = homed_available;
             }
 
             Message::SelectUser(user_idx) => {

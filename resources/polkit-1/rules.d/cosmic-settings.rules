@@ -3,6 +3,8 @@ polkit.addRule(function(action, subject) {
             action.id == "org.freedesktop.locale1.set-keyboard" ||
             action.id == "org.freedesktop.ModemManager1.Device.Control" ||
             action.id == "org.freedesktop.hostname1.set-static-hostname" ||
+            action.id == "org.freedesktop.home1.authenticate-home" ||
+            action.id == "org.freedesktop.home1.passwd-home" ||
             action.id == "org.freedesktop.hostname1.set-hostname") &&
         subject.local &&
         subject.active &&
