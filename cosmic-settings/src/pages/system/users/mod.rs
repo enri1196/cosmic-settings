@@ -78,7 +78,7 @@ pub struct Page {
     users: Vec<User>,
     selected_user_idx: Option<usize>,
     dialog: Option<Dialog>,
-    homed_available: bool,
+    backends: backend::BackendRegistry,
     default_icon: icon::Handle,
     current_password_label: String,
     password_label: String,
@@ -99,7 +99,7 @@ impl Default for Page {
             users: Vec::default(),
             selected_user_idx: None,
             dialog: None,
-            homed_available: false,
+            backends: backend::BackendRegistry::default(),
             default_icon: icon::from_path(PathBuf::from(DEFAULT_ICON_FILE)),
             current_password_label: fl!("current-password"),
             password_label: fl!("password"),
@@ -148,7 +148,7 @@ pub enum Message {
     Dialog(Option<Dialog>),
     Edit(usize, EditorField, String),
     LoadedIcon(u64, icon::Handle),
-    LoadPage(u64, Vec<User>, bool),
+    LoadPage(u64, Vec<User>, backend::BackendRegistry),
     HomedAuthRequested(HomedAction),
     HomedAuthSubmit(HomedAction, String),
     NewUser(String, String, String, bool),
@@ -265,7 +265,7 @@ impl page::Page<crate::pages::Message> for Page {
                 let mut validation_msg = String::new();
                 let username_regex = Regex::new("^[a-z][a-z0-9-]{0,30}$").unwrap();
                 let username_valid = username_regex.is_match(&user.username);
-                let password_too_short = self.homed_available
+                let password_too_short = self.backends.homed_available()
                     && !user.password.is_empty()
                     && user.password.chars().count() < MIN_PASSWORD_LEN;
                 let complete_maybe = if !username_valid && !user.username.is_empty() {
@@ -508,10 +508,11 @@ impl page::Page<crate::pages::Message> for Page {
 impl Page {
     pub async fn reload() -> Message {
         let uid = rustix::process::getuid().as_raw() as u64;
+        let backends = backend::BackendRegistry::load().await;
         let mut users = Vec::new();
         let mut seen_ids = HashSet::new();
 
-        for backend in backend::active_backends().await {
+        for backend in backends.iter() {
             match backend.list_users().await {
                 Ok(entries) => {
                     for entry in entries {
@@ -526,13 +527,7 @@ impl Page {
             }
         }
 
-        let mut homed_available = false;
-        #[cfg(feature = "homed")]
-        {
-            homed_available = backend::HomedBackend::try_new().await.is_some();
-        }
-
-        Message::LoadPage(uid, users, homed_available)
+        Message::LoadPage(uid, users, backends)
     }
 
     pub fn update(&mut self, message: Message) -> cosmic::Task<crate::app::Message> {
@@ -569,12 +564,11 @@ impl Page {
 
             Message::HomedAuthSubmit(action, password) => {
                 self.dialog = None;
-
+                let backends = self.backends.clone();
                 return cosmic::task::future(async move {
                     match action {
                         HomedAction::SetAdmin { user, is_admin } => {
-                            let Some(backend) = backend::backend_for_kind(user.backend).await
-                            else {
+                            let Some(backend) = backends.get(user.backend) else {
                                 return Message::None;
                             };
 
@@ -589,8 +583,7 @@ impl Page {
                             Message::ChangedAccountType(user.id, is_admin)
                         }
                         HomedAction::SetFullName { user, full_name } => {
-                            let Some(backend) = backend::backend_for_kind(user.backend).await
-                            else {
+                            let Some(backend) = backends.get(user.backend) else {
                                 return Message::None;
                             };
 
@@ -604,8 +597,7 @@ impl Page {
                             Message::None
                         }
                         HomedAction::SetProfileIcon { user, path } => {
-                            let Some(backend) = backend::backend_for_kind(user.backend).await
-                            else {
+                            let Some(backend) = backends.get(user.backend) else {
                                 return Message::None;
                             };
 
@@ -655,6 +647,7 @@ impl Page {
                     }
                 };
 
+                let backends = self.backends.clone();
                 return cosmic::task::future(async move {
                     let Ok(path) = url.to_file_path() else {
                         tracing::error!("selected image is not a file path");
@@ -668,7 +661,7 @@ impl Page {
                         });
                     }
 
-                    let Some(backend) = backend::backend_for_kind(user_entry.backend).await else {
+                    let Some(backend) = backends.get(user_entry.backend) else {
                         return Message::None;
                     };
 
@@ -738,10 +731,9 @@ impl Page {
                                     return cosmic::Task::none();
                                 }
 
+                                let backends = self.backends.clone();
                                 return cosmic::Task::future(async move {
-                                    let Some(backend) =
-                                        backend::backend_for_kind(user_entry.backend).await
-                                    else {
+                                    let Some(backend) = backends.get(user_entry.backend) else {
                                         return;
                                     };
 
@@ -764,10 +756,9 @@ impl Page {
                                 let user_entry = user_entry.clone();
                                 let username = user.username.clone();
 
+                                let backends = self.backends.clone();
                                 return cosmic::Task::future(async move {
-                                    let Some(backend) =
-                                        backend::backend_for_kind(user_entry.backend).await
-                                    else {
+                                    let Some(backend) = backends.get(user_entry.backend) else {
                                         return;
                                     };
 
@@ -795,8 +786,9 @@ impl Page {
                     None
                 };
 
+                let backends = self.backends.clone();
                 return cosmic::Task::future(async move {
-                    let Some(backend) = backend::backend_for_kind(user_entry.backend).await else {
+                    let Some(backend) = backends.get(user_entry.backend) else {
                         return;
                     };
 
@@ -810,10 +802,10 @@ impl Page {
                 .discard();
             }
 
-            Message::LoadPage(uid, users, homed_available) => {
+            Message::LoadPage(uid, users, backends) => {
                 self.current_user_id = uid;
                 self.users = users;
-                self.homed_available = homed_available;
+                self.backends = backends;
             }
 
             Message::SelectUser(user_idx) => {
@@ -837,8 +829,9 @@ impl Page {
                     return cosmic::Task::none();
                 };
 
+                let backends = self.backends.clone();
                 return cosmic::task::future(async move {
-                    let Some(backend) = backend::backend_for_kind(user_entry.backend).await else {
+                    let Some(backend) = backends.get(user_entry.backend) else {
                         return Message::None;
                     };
 
@@ -864,9 +857,10 @@ impl Page {
 
             Message::NewUser(username, full_name, password, is_admin) => {
                 self.dialog = None;
+                let backends = self.backends.clone();
 
                 return cosmic::task::future(async move {
-                    let Some(backend) = backend::preferred_backend().await else {
+                    let Some(backend) = backends.preferred() else {
                         return Message::None;
                     };
 
@@ -909,8 +903,9 @@ impl Page {
                     return cosmic::Task::none();
                 }
 
+                let backends = self.backends.clone();
                 return cosmic::task::future(async move {
-                    let Some(backend) = backend::backend_for_kind(user_entry.backend).await else {
+                    let Some(backend) = backends.get(user_entry.backend) else {
                         return Message::None;
                     };
 

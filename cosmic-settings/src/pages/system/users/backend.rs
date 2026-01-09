@@ -6,6 +6,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use zbus_polkit::policykit1::CheckAuthorizationFlags;
 
 pub use super::classic::ClassicBackend;
@@ -69,46 +70,51 @@ pub trait UserBackend: Send + Sync {
     ) -> anyhow::Result<()>;
 }
 
-pub async fn active_backends() -> Vec<Box<dyn UserBackend>> {
-    let mut backends: Vec<Box<dyn UserBackend>> = Vec::new();
-
-    #[cfg(feature = "homed")]
-    if let Some(homed) = HomedBackend::try_new().await {
-        backends.push(Box::new(homed));
-    }
-
-    backends.push(Box::new(ClassicBackend::new()));
-
-    backends
+#[derive(Clone, Default)]
+pub struct BackendRegistry {
+    by_kind: HashMap<UserBackendKind, Arc<dyn UserBackend>>,
 }
 
-pub async fn backend_for_kind(kind: UserBackendKind) -> Option<Box<dyn UserBackend>> {
-    match kind {
-        UserBackendKind::Classic => Some(Box::new(ClassicBackend::new())),
-        UserBackendKind::Homed => {
-            #[cfg(feature = "homed")]
-            {
-                let Some(homed) = HomedBackend::try_new().await else {
-                    return None;
-                };
-                Some(Box::new(homed))
-            }
+impl std::fmt::Debug for BackendRegistry {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BackendRegistry")
+            .field("kinds", &self.by_kind.keys().collect::<Vec<_>>())
+            .finish()
+    }
+}
 
-            #[cfg(not(feature = "homed"))]
-            {
-                None
-            }
+impl BackendRegistry {
+    pub async fn load() -> Self {
+        let mut by_kind: HashMap<UserBackendKind, Arc<dyn UserBackend>> = HashMap::new();
+
+        #[cfg(feature = "homed")]
+        if let Some(homed) = HomedBackend::try_new().await {
+            by_kind.insert(UserBackendKind::Homed, Arc::new(homed));
         }
-    }
-}
 
-pub async fn preferred_backend() -> Option<Box<dyn UserBackend>> {
-    #[cfg(feature = "homed")]
-    if let Some(homed) = HomedBackend::try_new().await {
-        return Some(Box::new(homed));
+        if let Some(classic) = ClassicBackend::try_new().await {
+            by_kind.insert(UserBackendKind::Homed, Arc::new(classic));
+        }
+
+        Self { by_kind }
     }
 
-    Some(Box::new(ClassicBackend::new()))
+    pub fn get(&self, kind: UserBackendKind) -> Option<Arc<dyn UserBackend>> {
+        self.by_kind.get(&kind).cloned()
+    }
+
+    pub fn preferred(&self) -> Option<Arc<dyn UserBackend>> {
+        self.get(UserBackendKind::Homed)
+            .or_else(|| self.get(UserBackendKind::Classic))
+    }
+
+    pub fn homed_available(&self) -> bool {
+        self.by_kind.contains_key(&UserBackendKind::Homed)
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = Arc<dyn UserBackend>> + '_ {
+        self.by_kind.values().cloned()
+    }
 }
 
 pub fn uid_range() -> (u64, u64) {
