@@ -20,12 +20,15 @@ const ICON_SIZE_THRESHOLD: u64 = 900_000; // 900KB
 // Target dimensions for resized profile icons
 const TARGET_ICON_SIZE: u32 = 512;
 
-#[derive(Debug, Default)]
-pub struct ClassicBackend;
+pub struct ClassicBackend {
+    conn: zbus::Connection,
+}
 
 impl ClassicBackend {
-    pub fn new() -> Self {
-        Self
+    pub async fn try_new() -> Option<Self>  {
+        let conn = zbus::Connection::system().await.ok()?;
+        let _proxy = accounts_zbus::AccountsProxy::new(&conn).await.ok()?;
+        Some(Self { conn })
     }
 }
 
@@ -38,12 +41,8 @@ impl UserBackend for ClassicBackend {
 
         let admin_group = groups.iter().find(|g| &*g.name == "sudo");
 
-        let conn = zbus::Connection::system()
-            .await
-            .context("unable to access dbus system service")?;
-
         for user in passwd_users {
-            let Ok(user_proxy) = accounts_zbus::UserProxy::from_uid(&conn, user.uid).await else {
+            let Ok(user_proxy) = accounts_zbus::UserProxy::from_uid(&self.conn, user.uid).await else {
                 continue;
             };
 
@@ -70,13 +69,12 @@ impl UserBackend for ClassicBackend {
         password: &str,
         _old_password: Option<&str>,
     ) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let user_proxy = accounts_zbus::UserProxy::from_uid(&conn, user.id)
+        let user_proxy = accounts_zbus::UserProxy::from_uid(&self.conn, user.id)
             .await
             .context("failed to get user proxy")?;
         let password_hashed = hash_password(password);
 
-        request_permission_on_denial(&conn, || user_proxy.set_password(&password_hashed, ""))
+        request_permission_on_denial(&self.conn, || user_proxy.set_password(&password_hashed, ""))
             .await
             .context("failed to set password")?;
 
@@ -84,12 +82,11 @@ impl UserBackend for ClassicBackend {
     }
 
     async fn delete_user(&self, user: &UserEntry) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let accounts = accounts_zbus::AccountsProxy::new(&conn)
+        let accounts = accounts_zbus::AccountsProxy::new(&self.conn)
             .await
             .context("failed to get accounts proxy")?;
 
-        request_permission_on_denial(&conn, || accounts.delete_user(user.id as i64, false))
+        request_permission_on_denial(&self.conn, || accounts.delete_user(user.id as i64, false))
             .await
             .context("failed to delete user account")?;
 
@@ -102,12 +99,11 @@ impl UserBackend for ClassicBackend {
         is_admin: bool,
         _auth_password: Option<&str>,
     ) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let user_proxy = accounts_zbus::UserProxy::from_uid(&conn, user.id)
+        let user_proxy = accounts_zbus::UserProxy::from_uid(&self.conn, user.id)
             .await
             .context("failed to get user proxy")?;
 
-        request_permission_on_denial(&conn, || async {
+        request_permission_on_denial(&self.conn, || async {
             user_proxy
                 .set_account_type(if is_admin { 1 } else { 0 })
                 .await
@@ -125,19 +121,18 @@ impl UserBackend for ClassicBackend {
         password: &str,
         is_admin: bool,
     ) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let accounts = accounts_zbus::AccountsProxy::new(&conn)
+        let accounts = accounts_zbus::AccountsProxy::new(&self.conn)
             .await
             .context("failed to get accounts proxy")?;
 
-        let user_object_path = request_permission_on_denial(&conn, || {
+        let user_object_path = request_permission_on_denial(&self.conn, || {
             accounts.create_user(username, full_name, if is_admin { 1 } else { 0 })
         })
         .await
         .context("failed to create user account")?;
 
         let password_hashed = hash_password(password);
-        let user = accounts_zbus::UserProxy::new(&conn, user_object_path)
+        let user = accounts_zbus::UserProxy::new(&self.conn, user_object_path)
             .await
             .context("failed to get user by object path")?;
 
@@ -153,12 +148,11 @@ impl UserBackend for ClassicBackend {
         full_name: &str,
         _auth_password: Option<&str>,
     ) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let user_proxy = accounts_zbus::UserProxy::from_uid(&conn, user.id)
+        let user_proxy = accounts_zbus::UserProxy::from_uid(&self.conn, user.id)
             .await
             .context("failed to get user proxy")?;
 
-        request_permission_on_denial(&conn, || user_proxy.set_real_name(full_name))
+        request_permission_on_denial(&self.conn, || user_proxy.set_real_name(full_name))
             .await
             .context("failed to set real name")?;
 
@@ -166,12 +160,11 @@ impl UserBackend for ClassicBackend {
     }
 
     async fn set_username(&self, user: &UserEntry, username: &str) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let user_proxy = accounts_zbus::UserProxy::from_uid(&conn, user.id)
+        let user_proxy = accounts_zbus::UserProxy::from_uid(&self.conn, user.id)
             .await
             .context("failed to get user proxy")?;
 
-        request_permission_on_denial(&conn, || user_proxy.set_user_name(username))
+        request_permission_on_denial(&self.conn, || user_proxy.set_user_name(username))
             .await
             .context("failed to set username")?;
 
@@ -184,15 +177,14 @@ impl UserBackend for ClassicBackend {
         icon_path: &Path,
         _auth_password: Option<&str>,
     ) -> anyhow::Result<()> {
-        let conn = zbus::Connection::system().await?;
-        let user_proxy = accounts_zbus::UserProxy::from_uid(&conn, user.id)
+        let user_proxy = accounts_zbus::UserProxy::from_uid(&self.conn, user.id)
             .await
             .context("failed to get user proxy")?;
 
         let icon_path = prepare_icon_file(icon_path).context("failed to prepare icon file")?;
         let icon_path = icon_path.to_str().context("icon path is not valid UTF-8")?;
 
-        request_permission_on_denial(&conn, || user_proxy.set_icon_file(icon_path))
+        request_permission_on_denial(&self.conn, || user_proxy.set_icon_file(icon_path))
             .await
             .context("failed to set profile icon")?;
 
