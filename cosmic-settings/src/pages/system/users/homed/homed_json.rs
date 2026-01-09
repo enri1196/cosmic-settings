@@ -139,6 +139,7 @@ pub struct UserSecretSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 pub struct GroupRecord {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub group_name: Option<String>,
@@ -176,6 +177,7 @@ pub struct GroupRecord {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 pub struct GroupPrivilegedSection {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hashed_password: Vec<String>,
@@ -185,6 +187,7 @@ pub struct GroupPrivilegedSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 pub struct GroupPerMachineSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub match_machine_id: Option<String>,
@@ -202,6 +205,7 @@ pub struct GroupPerMachineSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 pub struct GroupBindingSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub gid: Option<u64>,
@@ -211,6 +215,7 @@ pub struct GroupBindingSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 pub struct GroupStatusSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub service: Option<String>,
@@ -220,6 +225,7 @@ pub struct GroupStatusSection {
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
+#[allow(unused)]
 pub struct GroupSignatureSection {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub data: Option<String>,
@@ -230,6 +236,7 @@ pub struct GroupSignatureSection {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[allow(unused)]
 pub struct GroupSecretSection {
     #[serde(flatten, default, skip_serializing_if = "HashMap::is_empty")]
     pub entries: HashMap<String, Value>,
